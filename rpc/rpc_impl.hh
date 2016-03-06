@@ -749,7 +749,6 @@ future<> protocol<Serializer, MsgType>::server::connection::process() {
         if (f.failed()) {
             log_exception(*this, "server connection dropped", f.get_exception());
         }
-        f.ignore_ready_future();
         this->_error = true;
         return this->out_ready().then_wrapped([this] (future<> f) {
             f.ignore_ready_future();
@@ -842,9 +841,8 @@ protocol<Serializer, MsgType>::client::client(protocol& proto, ipv4_addr addr, f
         });
     }).then_wrapped([this] (future<> f) {
         if (f.failed()) {
-            log_exception(*this, "client connection dropped", f.get_exception());
+            log_exception(*this, _connected ? "client connection dropped" : "fail to connect", f.get_exception());
         }
-        f.ignore_ready_future();
         this->_error = true;
         auto need_close = _connected;
         if (!_connected) {
