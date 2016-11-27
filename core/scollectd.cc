@@ -902,7 +902,7 @@ type_id type_id_for(known_type t) {
 value_map get_value_map() {
     value_map res;
     for (auto i : get_impl().get_value_list_map()) {
-        if (i.second->is_enabled()) {
+        if (i.second.get() && i.second->is_enabled()) {
             res[i.first] = raw_to_value(i.second);
         }
     }
