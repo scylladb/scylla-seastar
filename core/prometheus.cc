@@ -123,25 +123,34 @@ future<> start(httpd::http_server_control& http_server, const config& ctx) {
                         vec[cpu] = res;
                     });
                 }).then([rep = std::move(rep), &vec, &ctx]() mutable {
+                    std::unordered_map<sstring, std::vector<std::pair<unsigned, scollectd::value_map::value_type*>>> families;
                     uint32_t cpu = 0;
-                    for (auto value: vec) {
-                        for (auto i : value) {
-                            pm::MetricFamily mtf;
-                            std::string s;
-                            google::protobuf::io::StringOutputStream os(&s);
-                            mtf.set_name(ctx.prefix + "_" + collectd_name(i.first, cpu));
-                            mtf.set_help(ctx.metric_help);
-                            fill_metric(mtf, i.second, i.first, cpu);
-                            if (mtf.metric_size() > 0) {
-                                std::stringstream ss;
-                                if (!write_delimited_to(mtf, &os)) {
-                                    seastar_logger.warn("Failed to write protobuf metrics");
-                                }
-                                rep->_content += s;
-                            }
+                    for (auto&& shard : vec) {
+                        for (auto&& metric : shard) {
+                            auto name = ctx.prefix + "_" + collectd_name(metric.first, cpu);
+                            families[name].push_back(std::make_pair(cpu, &metric));
                         }
                         cpu++;
                     }
+                    std::string s;
+                    google::protobuf::io::StringOutputStream os(&s);
+                    for (auto name_metrics : families) {
+                        auto&& name = name_metrics.first;
+                        auto&& metrics = name_metrics.second;
+                        pm::MetricFamily mtf;
+                        mtf.set_name(name);
+                        mtf.set_help("where did the description disappear?");
+                        for (auto p_cpu_metric : metrics) {
+                            auto cpu = p_cpu_metric.first;
+                            auto&& id = p_cpu_metric.second->first;
+                            auto&& value = p_cpu_metric.second->second;
+                            fill_metric(mtf, value, id, cpu);
+                        }
+                        if (!write_delimited_to(mtf, &os)) {
+                            seastar_logger.warn("Failed to write protobuf metrics");
+                        }
+                    }
+                    rep->_content = s;
                     return make_ready_future<std::unique_ptr<reply>>(std::move(rep));
                 });
             });
