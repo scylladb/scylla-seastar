@@ -65,7 +65,7 @@ static std::string safe_name(const sstring& name) {
 }
 
 static sstring collectd_name(const scollectd::type_instance_id & id, uint32_t cpu) {
-    return safe_name(id.plugin());
+    return safe_name(id.plugin()) + "_" + safe_name(id.type_instance());
 }
 
 static pm::Metric* add_label(pm::Metric* mt, const scollectd::type_instance_id & id, uint32_t cpu) {
