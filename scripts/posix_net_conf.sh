@@ -277,7 +277,7 @@ setup_one_hw_iface()
     local iface=$1
     local mq_mode=$2
 
-    [[ -z $mq_mode ]] && mq_mode=`get_def_mq_mode $iface`
+    [[ -z "$mq_mode" ]] && mq_mode=`get_def_mq_mode $iface`
 
     # bind all NIC IRQs to CPU0
     if [[ "$mq_mode" == "sq" ]]; then
@@ -320,7 +320,7 @@ gen_cpumask_one_hw_iface()
     local iface=$1
     local mq_mode=$2
 
-    [[ -z $mq_mode ]] && mq_mode=`get_def_mq_mode $iface`
+    [[ -z "$mq_mode" ]] && mq_mode=`get_def_mq_mode $iface`
 
     # bind all NIC IRQs to CPU0
     if [[ "$mq_mode" == "sq" ]]; then
@@ -335,18 +335,18 @@ gen_cpumask_bonding_iface()
     local bond_iface=$1
     local mq_mode=$2
     local iface
-    local found_mq=
+    local found_mq=""
 
     for iface in `cat /sys/class/net/$bond_iface/bonding/slaves`
     do
         if dev_is_hw_iface $iface; then
-            [[ -z $mq_mode ]] && mq_mode=`get_def_mq_mode $iface`
+            [[ -z "$mq_mode" ]] && mq_mode=`get_def_mq_mode $iface`
             if [[ "$mq_mode" == "mq" ]]; then
                 found_mq=1
             fi
         fi
     done
-    if found_mq; then
+    if [[ -n "$found_mq" ]]; then
         hwloc-calc all
     else
         hwloc-distrib --restrict $(hwloc-calc all ~core:0) 1 
@@ -355,11 +355,11 @@ gen_cpumask_bonding_iface()
 
 IFACE="eth0"
 MQ_MODE=""
-CPU_MASK=
+CPU_MASK=""
 
 parse_args $@
 
-if [[ $CPU_MASK ]]; then
+if [[ -n "$CPU_MASK" ]]; then
     if dev_is_hw_iface $IFACE; then
         gen_cpumask_one_hw_iface $IFACE $MQ_MODE
     elif dev_is_bond_iface $IFACE; then
