@@ -20,6 +20,8 @@ import os, os.path, textwrap, argparse, sys, shlex, subprocess, tempfile, re
 
 configure_args = str.join(' ', [shlex.quote(x) for x in sys.argv[1:]])
 
+srcdir = os.getcwd()
+
 def get_flags():
     with open('/proc/cpuinfo') as f:
         for line in f:
@@ -572,7 +574,7 @@ if args.dpdk_target:
     else:
         libs += '-Wl,--whole-archive -lrte_pmd_vmxnet3_uio -lrte_pmd_i40e -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_pmd_ring -Wl,--no-whole-archive -lrte_hash -lrte_kvargs -lrte_mbuf -lethdev -lrte_eal -lrte_malloc -lrte_mempool -lrte_ring -lrte_cmdline -lrte_cfgfile -lrt -lm -ldl'
 
-args.user_cflags += ' -Ifmt'
+args.user_cflags += ' -I {srcdir}/fmt'.format(**globals())
 
 if not args.staticboost:
     args.user_cflags += ' -DBOOST_TEST_DYN_LINK'
@@ -665,9 +667,10 @@ with open(buildfile, 'w') as f:
     f.write(textwrap.dedent('''\
         configure_args = {configure_args}
         builddir = {outdir}
+        full_builddir = {srcdir}/$builddir
         cxx = {cxx}
         # we disable _FORTIFY_SOURCE because it generates false positives with longjmp() (core/thread.cc)
-        cxxflags = -std=gnu++1y {dbgflag} {fpie} -Wall -Werror -fvisibility=hidden {visibility_flags} -pthread -I. -U_FORTIFY_SOURCE {user_cflags} {warnings} {defines}
+        cxxflags = -std=gnu++1y {dbgflag} {fpie} -Wall -Werror -fvisibility=hidden {visibility_flags} -pthread -I{srcdir} -U_FORTIFY_SOURCE {user_cflags} {warnings} {defines}
         ldflags = {dbgflag} -Wl,--no-as-needed {static} {pie} -fvisibility=hidden {visibility_flags} -pthread {user_ldflags}
         libs = {libs}
         pool link_pool
@@ -700,7 +703,7 @@ with open(buildfile, 'w') as f:
         elif modeval['sanitize']:
             modeval['sanitize'] += ' -DASAN_ENABLED'
         f.write(textwrap.dedent('''\
-            cxxflags_{mode} = {sanitize} {opt} -I $builddir/{mode}/gen
+            cxxflags_{mode} = {sanitize} {opt} -I $full_builddir/{mode}/gen
             libs_{mode} = {sanitize_libs} {libs}
             rule cxx.{mode}
               command = $cxx -MMD -MT $out -MF $out.d $cxxflags_{mode} $cxxflags -c -o $out $in
@@ -740,9 +743,9 @@ with open(buildfile, 'w') as f:
                         URL: http://seastar-project.org/
                         Description: Advanced C++ framework for high-performance server applications on modern hardware.
                         Version: 1.0
-                        Libs: -L{srcdir}/{builddir} -Wl,--whole-archive,-lseastar,--no-whole-archive {dbgflag} -Wl,--no-as-needed {static} {pie} -fvisibility=hidden {visibility_flags} -pthread {user_ldflags} {sanitize_libs} {libs}
-                        Cflags: -std=gnu++1y {dbgflag} {fpie} -Wall -Werror -fvisibility=hidden -pthread -I{srcdir} -I{srcdir}/fmt -I{srcdir}/{builddir}/gen {user_cflags} {warnings} {defines} {sanitize} {opt}
-                        ''').format(builddir = 'build/' + mode, srcdir = os.getcwd(), **vars)
+                        Libs: -L$full_builddir/{mode} -Wl,--whole-archive,-lseastar,--no-whole-archive $cxxflags $cxflags_{mode} -Wl,--no-as-needed {static} {pie} {user_ldflags} {sanitize_libs} {libs}
+                        Cflags: $cxxflags $cxxflags_{mode}
+                        ''').format(**vars)
                 f.write('build $builddir/{}/{}: gen\n  text = {}\n'.format(mode, binary, repr(pc)))
             elif binary.endswith('.a'):
                 f.write('build $builddir/{}/{}: ar.{} {}\n'.format(mode, binary, mode, str.join(' ', objs)))
