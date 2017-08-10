@@ -1050,6 +1050,8 @@ void session::shutdown_with_timer(gnutls_close_request_t how, Func && func) {
            f.ignore_ready_future();
            func(*sr._session);
         });
+    } else {
+        f.ignore_ready_future();
     }
 }
 
