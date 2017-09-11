@@ -781,13 +781,7 @@ with open(buildfile, 'w') as f:
               build $builddir/{mode}/{cares_dir}/ares_build.h : phony $builddir/{mode}/{cares_dir}/Makefile
               build $builddir/{mode}/{cares_src_lib} : caresmake_{mode} $builddir/{mode}/{cares_dir}/Makefile | {cares_sources}
               build $builddir/{mode}/lib{cares_lib}.a : copy_file $builddir/{mode}/{cares_src_lib}
-<<<<<<< HEAD
-            ''').format(srcdir = os.getcwd(), cares_opts=modeval['cares_opts'], **globals()))
-||||||| parent of c8484866c0... build: export full cflags in pkgconfig file
-            ''').format(srcdir = os.getcwd(), cares_opts=(modeval['cares_opts']), **globals()))
-=======
-            ''').format(cares_opts=(modeval['cares_opts']), **globals()))
->>>>>>> c8484866c0... build: export full cflags in pkgconfig file
+            ''').format(cares_opts=modeval['cares_opts'], **globals()))
         objdeps['$builddir/' + mode + '/net/dns.o'] = ' $builddir/' + mode + '/' + cares_dir + '/ares_build.h'
         compiles = {}
         ragels = {}
