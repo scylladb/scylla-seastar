@@ -121,7 +121,7 @@ get_irqs_one()
             for i in `ls -d virtio*`; do
                 grep $i /proc/interrupts|awk '{ print $1 }'|sed -e 's/:$//'
             done
-            cd -
+            cd - > /dev/null
         elif [[ "$modalias" =~ ^xen:vif ]]; then
             grep $iface /proc/interrupts|awk '{ print $1 }'|sed -e 's/:$//'
         fi
