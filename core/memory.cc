@@ -52,6 +52,7 @@
 
 #include "memory.hh"
 #include "reactor.hh"
+#include "util/alloc_failure_injector.hh"
 
 namespace seastar {
 
@@ -1197,6 +1198,7 @@ size_t object_size(void* ptr) {
 }
 
 void* allocate(size_t size) {
+    on_alloc_point();
     if (size <= sizeof(free_object)) {
         size = sizeof(free_object);
     }
@@ -1215,6 +1217,7 @@ void* allocate(size_t size) {
 }
 
 void* allocate_aligned(size_t align, size_t size) {
+    on_alloc_point();
     size = std::max(size, align);
     if (size <= sizeof(free_object)) {
         size = sizeof(free_object);
@@ -1465,6 +1468,7 @@ void* __libc_calloc(size_t n, size_t m) throw ();
 extern "C"
 [[gnu::visibility("default")]]
 void* realloc(void* ptr, size_t size) {
+    seastar::memory::on_alloc_point();
     auto old_size = ptr ? object_size(ptr) : 0;
     if (size == old_size) {
         return ptr;
