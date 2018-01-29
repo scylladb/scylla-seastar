@@ -29,6 +29,7 @@
 #include <assert.h>
 #include <utility>
 #include <fcntl.h>
+#include <sys/uio.h>
 #include <sys/ioctl.h>
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
