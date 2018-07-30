@@ -1505,7 +1505,7 @@ void free(void* ptr) {
 extern "C"
 [[gnu::alias("free")]]
 [[gnu::visibility("default")]]
-void* __libc_free(void* obj) throw ();
+void __libc_free(void* obj) throw ();
 
 extern "C"
 [[gnu::visibility("default")]]
