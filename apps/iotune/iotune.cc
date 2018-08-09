@@ -555,6 +555,9 @@ void write_property_file(sstring conf_file, struct disk_descriptor desc) {
     string_to_file(conf_file, sstring(out.c_str(), out.size()));
 }
 
+static constexpr unsigned task_quotas_in_default_latency_goal = 3;
+static constexpr float latency_goal = 0.0005;
+
 int main(int ac, char** av) {
     namespace bpo = boost::program_options;
     bool fs_check = false;
@@ -636,8 +639,8 @@ int main(int ac, char** av) {
             // Allow each I/O Queue to have at least 10k IOPS and 100MB. Values decided based
             // on the write performance, which tends to be lower.
             unsigned num_io_queues = smp::count;
-            num_io_queues = std::min(smp::count, unsigned(desc.write_iops / 10000));
-            num_io_queues = std::min(smp::count, unsigned(desc.write_bw / (100 * 1024 * 1024)));
+            num_io_queues = std::min(smp::count, unsigned((task_quotas_in_default_latency_goal * desc.write_iops * latency_goal) / 4));
+            num_io_queues = std::min(num_io_queues, unsigned((task_quotas_in_default_latency_goal * desc.write_bw * latency_goal) / (4 * 4096)));
             num_io_queues = std::max(num_io_queues, 1u);
             fmt::print("Recommended --num-io-queues: {}\n", num_io_queues);
 
