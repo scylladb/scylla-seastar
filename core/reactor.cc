@@ -3951,7 +3951,7 @@ void smp::qs_deleter::operator()(smp_message_queue** qs) const {
 class disk_config_params {
 public:
     unsigned _num_io_queues = smp::count;
-    unsigned _capacity = std::numeric_limits<unsigned>::max();
+    std::experimental::optional<unsigned> _capacity;
     uint64_t _read_bytes_rate = std::numeric_limits<uint64_t>::max();
     uint64_t _write_bytes_rate = std::numeric_limits<uint64_t>::max();
     uint64_t _read_req_rate = std::numeric_limits<uint64_t>::max();
@@ -4008,8 +4008,7 @@ public:
         uint64_t max_bandwidth = std::max(_read_bytes_rate, _write_bytes_rate);
         uint64_t max_iops = std::max(_read_req_rate, _write_req_rate);
 
-        cfg.capacity = per_io_queue(_capacity);
-        if (cfg.capacity == std::numeric_limits<unsigned>::max()) {
+        if (!_capacity) {
             cfg.disk_bytes_write_to_read_multiplier = (io_queue::read_request_base_count * _read_bytes_rate) / _write_bytes_rate;
             cfg.disk_req_write_to_read_multiplier = (io_queue::read_request_base_count * _read_req_rate) / _write_req_rate;
             cfg.max_req_count = max_bandwidth == std::numeric_limits<uint64_t>::max()
@@ -4019,6 +4018,7 @@ public:
                 ? std::numeric_limits<unsigned>::max()
                 : io_queue::read_request_base_count * per_io_queue(max_bandwidth * _latency_goal.count());
         } else {
+            cfg.capacity = per_io_queue(*_capacity);
             cfg.disk_bytes_write_to_read_multiplier = 1;
             cfg.disk_req_write_to_read_multiplier = 1;
         }
