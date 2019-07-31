@@ -577,6 +577,12 @@ reactor::reactor(unsigned id)
     sigaddset(&mask, block_notifier_signal());
     r = ::pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
     assert(r == 0);
+
+    // glib's backtrace() calls dlopen("libgcc_s.so.1") once to resolve unwind related symbols.
+    // If first stall detector invocation happens during another dlopen() call the calling thread
+    // will deadlock. The dummy call here makes sure that backtrace's initialization happens in
+    // a safe place.
+    backtrace([] (frame) {});
 #endif
     memory::set_reclaim_hook([this] (std::function<void ()> reclaim_fn) {
         add_high_priority_task(make_task(default_scheduling_group(), [fn = std::move(reclaim_fn)] {
