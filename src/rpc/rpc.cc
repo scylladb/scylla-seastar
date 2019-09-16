@@ -624,6 +624,7 @@ namespace rpc {
 
   client::client(const logger& l, void* s, client_options ops, socket socket, const socket_address& addr, const socket_address& local)
   : rpc::connection(l, s), _socket(std::move(socket)), _server_addr(addr), _options(ops) {
+       _socket.set_reuseaddr(ops.reuseaddr);
       _socket.connect(addr, local).then([this, ops = std::move(ops)] (connected_socket fd) {
           fd.set_nodelay(ops.tcp_nodelay);
           if (ops.keepalive) {
