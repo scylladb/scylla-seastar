@@ -154,11 +154,13 @@ using posix_connected_sctp_socket_impl = posix_connected_socket_impl<transport::
 
 class posix_socket_impl final : public socket_impl {
     lw_shared_ptr<pollable_fd> _fd;
+    bool _reuseaddr = false;
 public:
     posix_socket_impl() = default;
 
     virtual future<connected_socket> connect(socket_address sa, socket_address local, transport proto = transport::TCP) override {
         _fd = engine().make_pollable_fd(sa, proto);
+        _fd->get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, int(_reuseaddr));
         return engine().posix_connect(_fd, sa, local).then([fd = _fd, proto]() mutable {
             std::unique_ptr<connected_socket_impl> csi;
             if (proto == transport::TCP) {
@@ -168,6 +170,21 @@ public:
             }
             return make_ready_future<connected_socket>(connected_socket(std::move(csi)));
         });
+    }
+
+    void set_reuseaddr(bool reuseaddr) override {
+        _reuseaddr = reuseaddr;
+        if (_fd) {
+            _fd->get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, int(reuseaddr));
+        }
+    }
+
+    bool get_reuseaddr() const override {
+        if(_fd) {
+            return _fd->get_file_desc().getsockopt<int>(SOL_SOCKET, SO_REUSEADDR);
+        } else {
+            return _reuseaddr;
+        }
     }
 
     virtual void shutdown() override {

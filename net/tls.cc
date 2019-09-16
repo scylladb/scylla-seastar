@@ -1148,6 +1148,12 @@ public:
             return wrap_client(cred, std::move(s), std::move(name));
         });
     }
+    void set_reuseaddr(bool reuseaddr) override {
+      _socket.set_reuseaddr(reuseaddr);
+    }
+    bool get_reuseaddr() const override {
+      return _socket.get_reuseaddr();
+    }
     virtual void shutdown() override {
         _socket.shutdown();
     }
