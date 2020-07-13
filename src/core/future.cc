@@ -40,6 +40,9 @@ promise_base::~promise_base() noexcept {
     if (_future) {
         assert(_state);
         assert(_state->available() || !_task);
+        if (!_state->available()) {
+            _state->set_to_broken_promise();
+        }
         _future->detach_promise();
     } else if (__builtin_expect(bool(_task), false)) {
         assert(_state && !_state->available());
