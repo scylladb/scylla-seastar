@@ -1217,6 +1217,7 @@ void reactor::complete_timers(T& timers, E& expired_timers, EnableFunc&& enable_
     for (auto& t : expired_timers) {
         t._expired = true;
     }
+    const auto prev_sg = current_scheduling_group();
     while (!expired_timers.empty()) {
         auto t = &*expired_timers.begin();
         expired_timers.pop_front();
@@ -1234,7 +1235,9 @@ void reactor::complete_timers(T& timers, E& expired_timers, EnableFunc&& enable_
             }
         }
     }
-    *internal::current_scheduling_group_ptr() = default_scheduling_group();
+    // complete_timers() can be called from the context of run_tasks()
+    // as well so we need to restore the previous scheduling group (set by run_tasks()).
+    *internal::current_scheduling_group_ptr() = prev_sg;
     enable_fn();
 }
 
