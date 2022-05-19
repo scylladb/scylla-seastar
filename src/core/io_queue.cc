@@ -553,10 +553,10 @@ io_queue::priority_class_data::register_stats(sstring name, sstring mountpoint) 
                     sm::description("Total write bytes passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
             sm::make_derive("total_write_ops", _rwstat[internal::io_direction_and_length::write_idx].ops,
                     sm::description("Total write operations passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
-            sm::make_derive("total_delay_sec", [this] {
+            sm::make_real_counter("total_delay_sec", [this] {
                     return _total_queue_time.count();
                 }, sm::description("Total time spent in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
-            sm::make_derive("total_exec_sec", [this] {
+            sm::make_real_counter("total_exec_sec", [this] {
                     return _total_execution_time.count();
                 }, sm::description("Total time spent in disk"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
             sm::make_derive("starvation_time_sec", [this] {

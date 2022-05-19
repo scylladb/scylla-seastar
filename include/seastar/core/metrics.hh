@@ -253,6 +253,7 @@ namespace impl {
 // The value binding data types
 enum class data_type : uint8_t {
     COUNTER, // unsigned int 64
+    REAL_COUNTER, // double
     GAUGE, // double
     DERIVE, // signed int 64
     ABSOLUTE, // unsigned int 64
@@ -493,6 +494,12 @@ template<typename T>
 impl::metric_definition_impl make_counter(metric_name_type name,
         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
     return {name, {impl::data_type::COUNTER, "counter"}, make_function(std::forward<T>(val), impl::data_type::COUNTER), d, labels};
+}
+
+template<typename T>
+impl::metric_definition_impl make_real_counter(metric_name_type name,
+        T&& val, description d=description(), std::vector<label_instance> labels = {}) {
+    return {name, {impl::data_type::REAL_COUNTER, "counter"}, make_function(std::forward<T>(val), impl::data_type::REAL_COUNTER), d, labels};
 }
 
 /*!
