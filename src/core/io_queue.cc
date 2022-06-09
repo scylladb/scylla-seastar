@@ -44,6 +44,9 @@ logger io_log("io");
 
 using namespace std::chrono_literals;
 using namespace internal::linux_abi;
+using io_direction_and_length = internal::io_direction_and_length;
+
+static fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg) noexcept;
 
 struct default_io_exception_factory {
     static auto cancelled() {
@@ -100,7 +103,7 @@ public:
         }
     }
 
-    void on_dispatch(internal::io_direction_and_length dnl, std::chrono::duration<double> lat) noexcept {
+    void on_dispatch(io_direction_and_length dnl, std::chrono::duration<double> lat) noexcept {
         _rwstat[dnl.rw_idx()].add(dnl.length());
         _queue_time = lat;
         _total_queue_time += lat;
@@ -172,7 +175,7 @@ public:
         delete this;
     }
 
-    void dispatch(internal::io_direction_and_length dnl, io_queue::clock_type::time_point queued) noexcept {
+    void dispatch(io_direction_and_length dnl, io_queue::clock_type::time_point queued) noexcept {
         auto now = io_queue::clock_type::now();
         _pclass.on_dispatch(dnl, std::chrono::duration_cast<std::chrono::duration<double>>(now - queued));
         _dispatched = now;
@@ -188,7 +191,7 @@ public:
 
 class queued_io_request : private internal::io_request {
     io_queue& _ioq;
-    internal::io_direction_and_length _dnl;
+    io_direction_and_length _dnl;
     io_queue::clock_type::time_point _started;
     const stream_id _stream;
     fair_queue_entry _fq_entry;
@@ -198,7 +201,7 @@ class queued_io_request : private internal::io_request {
     bool is_cancelled() const noexcept { return !_desc; }
 
 public:
-    queued_io_request(internal::io_request req, io_queue& q, io_queue::priority_class_data& pc, internal::io_direction_and_length dnl)
+    queued_io_request(internal::io_request req, io_queue& q, io_queue::priority_class_data& pc, io_direction_and_length dnl)
         : io_request(std::move(req))
         , _ioq(q)
         , _dnl(std::move(dnl))
@@ -337,8 +340,8 @@ io_queue::io_queue(io_group_ptr group, internal::io_sink& sink)
         sstring caps_str;
         for (size_t sz = 512; sz <= 128 * 1024; sz <<= 1) {
             caps_str += fmt::format(" {}:{}/{}", sz,
-                    _group->_fgs[0]->ticket_capacity(request_fq_ticket(internal::io_direction_and_length(true, sz))),
-                    _group->_fgs[0]->ticket_capacity(request_fq_ticket(internal::io_direction_and_length(false, sz)))
+                    _group->_fgs[0]->ticket_capacity(request_fq_ticket(io_direction_and_length(true, sz))),
+                    _group->_fgs[0]->ticket_capacity(request_fq_ticket(io_direction_and_length(false, sz)))
             );
         }
         seastar_logger.info("Created io queue dev({}) capacities:{}", get_config().devid, caps_str);
@@ -357,7 +360,7 @@ fair_group::config io_group::make_fair_group_config(const io_queue::config& qcfg
     return cfg;
 }
 
-io_group::io_group(io_queue::config io_cfg) noexcept
+io_group::io_group(io_queue::config io_cfg)
     : _config(std::move(io_cfg))
 {
     auto fg_cfg = make_fair_group_config(_config);
@@ -381,39 +384,28 @@ io_group::io_group(io_queue::config io_cfg) noexcept
      * with little enough capacity. Actually (FIXME) requests should calculate
      * capacities instead of request_fq_ticket() so this math would go away.
      */
-    size_t max_size = std::numeric_limits<size_t>::max();
-    auto update_max_size = [this, &max_size] (unsigned idx) {
+    auto update_max_size = [this] (unsigned idx) {
         auto g_idx = _config.duplex ? idx : 0;
         auto max_cap = _fgs[g_idx]->maximum_capacity();
-        size_t prev_size = 0;
         for (unsigned shift = 0; ; shift++) {
-            unsigned weight;
-            size_t size;
-            if (idx == internal::io_direction_and_length::write_idx) {
-                weight = _config.disk_req_write_to_read_multiplier;
-                size = _config.disk_blocks_write_to_read_multiplier * (1 << shift);
-            } else {
-                weight = io_queue::read_request_base_count;
-                size = io_queue::read_request_base_count * (1 << shift);
-            }
-
-            auto cap = _fgs[g_idx]->ticket_capacity(fair_queue_ticket(weight, size));
+            auto ticket = make_ticket(io_direction_and_length(idx, 1 << (shift + io_queue::block_size_shift)), _config);
+            auto cap = _fgs[g_idx]->ticket_capacity(ticket);
             if (cap > max_cap) {
-                assert(shift > 0);
-                max_size = std::min(max_size, prev_size);
+                if (shift == 0) {
+                    throw std::runtime_error("IO-group limits are too low");
+                }
+                _max_request_length[idx] = 1 << ((shift - 1) + io_queue::block_size_shift);
                 break;
             }
-            prev_size = size;
         };
     };
 
-    update_max_size(internal::io_direction_and_length::write_idx);
-    update_max_size(internal::io_direction_and_length::read_idx);
-    max_ticket_size = max_size;
+    update_max_size(io_direction_and_length::write_idx);
+    update_max_size(io_direction_and_length::read_idx);
 
-    seastar_logger.info("Created io group, length limit {}:{}, rate {}:{}",
-            (max_size / io_queue::read_request_base_count) << io_queue::block_size_shift,
-            (max_size / _config.disk_blocks_write_to_read_multiplier) << io_queue::block_size_shift,
+    seastar_logger.info("Created io group dev({}), length limit {}:{}, rate {}:{}", _config.devid,
+            _max_request_length[io_direction_and_length::read_idx],
+            _max_request_length[io_direction_and_length::write_idx],
             _config.req_count_rate, _config.blocks_count_rate);
 }
 
@@ -540,18 +532,18 @@ io_queue::priority_class_data::register_stats(sstring name, sstring mountpoint) 
     auto class_label = class_label_type(name);
     new_metrics.add_group("io_queue", {
             sm::make_derive("total_bytes", [this] {
-                    return _rwstat[internal::io_direction_and_length::read_idx].bytes + _rwstat[internal::io_direction_and_length::write_idx].bytes;
+                    return _rwstat[io_direction_and_length::read_idx].bytes + _rwstat[io_direction_and_length::write_idx].bytes;
                 }, sm::description("Total bytes passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
             sm::make_derive("total_operations", [this] {
-                    return _rwstat[internal::io_direction_and_length::read_idx].ops + _rwstat[internal::io_direction_and_length::write_idx].ops;
+                    return _rwstat[io_direction_and_length::read_idx].ops + _rwstat[io_direction_and_length::write_idx].ops;
                 }, sm::description("Total operations passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
-            sm::make_derive("total_read_bytes", _rwstat[internal::io_direction_and_length::read_idx].bytes,
+            sm::make_derive("total_read_bytes", _rwstat[io_direction_and_length::read_idx].bytes,
                     sm::description("Total read bytes passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
-            sm::make_derive("total_read_ops", _rwstat[internal::io_direction_and_length::read_idx].ops,
+            sm::make_derive("total_read_ops", _rwstat[io_direction_and_length::read_idx].ops,
                     sm::description("Total read operations passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
-            sm::make_derive("total_write_bytes", _rwstat[internal::io_direction_and_length::write_idx].bytes,
+            sm::make_derive("total_write_bytes", _rwstat[io_direction_and_length::write_idx].bytes,
                     sm::description("Total write bytes passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
-            sm::make_derive("total_write_ops", _rwstat[internal::io_direction_and_length::write_idx].ops,
+            sm::make_derive("total_write_ops", _rwstat[io_direction_and_length::write_idx].ops,
                     sm::description("Total write operations passed in the queue"), {io_queue_shard(shard), sm::shard_label(owner), mountlabel, class_label}),
             sm::make_real_counter("total_delay_sec", [this] {
                     return _total_queue_time.count();
@@ -619,42 +611,50 @@ io_queue::priority_class_data& io_queue::find_or_create_class(const io_priority_
     return *_priority_classes[id];
 }
 
-stream_id io_queue::request_stream(internal::io_direction_and_length dnl) const noexcept {
+stream_id io_queue::request_stream(io_direction_and_length dnl) const noexcept {
     return get_config().duplex ? dnl.rw_idx() : 0;
 }
 
-fair_queue_ticket io_queue::request_fq_ticket(internal::io_direction_and_length dnl) const noexcept {
-    unsigned weight;
-    size_t size;
+fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg) noexcept {
+    struct {
+        unsigned weight;
+        unsigned size;
+    } mult[2];
 
-    if (dnl.is_write()) {
-        weight = get_config().disk_req_write_to_read_multiplier;
-        size = get_config().disk_blocks_write_to_read_multiplier * (dnl.length() >> block_size_shift);
-    } else {
-        weight = io_queue::read_request_base_count;
-        size = io_queue::read_request_base_count * (dnl.length() >> block_size_shift);
+    mult[io_direction_and_length::write_idx] = {
+        cfg.disk_req_write_to_read_multiplier,
+        cfg.disk_blocks_write_to_read_multiplier,
+    };
+    mult[io_direction_and_length::read_idx] = {
+        io_queue::read_request_base_count,
+        io_queue::read_request_base_count,
+    };
+
+    const auto& m = mult[dnl.rw_idx()];
+    return fair_queue_ticket(m.weight, m.size * (dnl.length() >> io_queue::block_size_shift));
+}
+
+fair_queue_ticket io_queue::request_fq_ticket(io_direction_and_length dnl) const noexcept {
+    size_t max_length = _group->_max_request_length[dnl.rw_idx()];
+
+    if (__builtin_expect(dnl.length() <= max_length, true)) {
+        return make_ticket(dnl, get_config());
     }
 
     static thread_local size_t oversize_warning_threshold = 0;
 
-    if (size > _group->max_ticket_size) {
-        if (size > oversize_warning_threshold) {
-            oversize_warning_threshold = size;
-            io_log.warn("oversized request (length {}) submitted. "
-                "dazed and confuzed, trimming its weight from {} down to {}", dnl.length(),
-                size, _group->max_ticket_size);
-        }
-        size = _group->max_ticket_size;
+    if (dnl.length() > oversize_warning_threshold) {
+        oversize_warning_threshold = dnl.length();
+        io_log.warn("oversized request (length {} > {}) submitted. ", dnl.length(), max_length);
     }
 
-    return fair_queue_ticket(weight, size);
+    return make_ticket(io_direction_and_length(dnl.rw_idx(), max_length), get_config());
 }
 
 io_queue::request_limits io_queue::get_request_limits() const noexcept {
     request_limits l;
-    size_t max_length = _group->max_ticket_size << block_size_shift;
-    l.max_read = align_down<size_t>(std::min<size_t>(get_config().disk_read_saturation_length, max_length / read_request_base_count), 1 << block_size_shift);
-    l.max_write = align_down<size_t>(std::min<size_t>(get_config().disk_write_saturation_length, max_length / get_config().disk_blocks_write_to_read_multiplier), 1 << block_size_shift);
+    l.max_read = align_down<size_t>(std::min<size_t>(get_config().disk_read_saturation_length, _group->_max_request_length[io_direction_and_length::read_idx]), 1 << block_size_shift);
+    l.max_write = align_down<size_t>(std::min<size_t>(get_config().disk_write_saturation_length, _group->_max_request_length[io_direction_and_length::write_idx]), 1 << block_size_shift);
     return l;
 }
 
@@ -664,7 +664,7 @@ io_queue::queue_request(const io_priority_class& pc, size_t len, internal::io_re
         // First time will hit here, and then we create the class. It is important
         // that we create the shared pointer in the same shard it will be used at later.
         auto& pclass = find_or_create_class(pc);
-        internal::io_direction_and_length dnl(req, len);
+        io_direction_and_length dnl(req, len);
         auto queued_req = std::make_unique<queued_io_request>(std::move(req), *this, pclass, std::move(dnl));
         auto fut = queued_req->get_future();
         internal::cancellable_queue* cq = nullptr;
