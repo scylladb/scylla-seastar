@@ -1372,6 +1372,11 @@ public:
             }
             auto n = msg.size();
             _output_pending = _out.put(std::move(msg).release());
+            if (_output_pending.failed()) {
+                // exception is copied back into _output_pending
+                // by the catch handlers below
+                std::rethrow_exception(_output_pending.get_exception());
+            }
             return n;
         } catch (...) {
             gnutls_transport_set_errno(*this, EIO);
