@@ -33,13 +33,14 @@ bool seastar::set_abort_on_internal_error(bool do_abort) noexcept {
     return abort_on_internal_error.exchange(do_abort);
 }
 
-static void log_error_and_backtrace(logger& logger, std::string_view msg) noexcept {
+template <typename Message>
+static void log_error_and_backtrace(logger& logger, const Message& msg) noexcept {
     logger.error("{}, at: {}", msg, current_backtrace());
 }
 
 void seastar::on_internal_error(logger& logger, std::string_view msg) {
+    log_error_and_backtrace(logger, msg);
     if (abort_on_internal_error.load()) {
-        log_error_and_backtrace(logger, msg);
         abort();
     } else {
         throw_with_backtrace<std::runtime_error>(std::string(msg));
@@ -47,8 +48,8 @@ void seastar::on_internal_error(logger& logger, std::string_view msg) {
 }
 
 void seastar::on_internal_error(logger& logger, std::exception_ptr ex) {
+    log_error_and_backtrace(logger, ex);
     if (abort_on_internal_error.load()) {
-        logger.error("{}", ex);
         abort();
     } else {
         std::rethrow_exception(std::move(ex));
