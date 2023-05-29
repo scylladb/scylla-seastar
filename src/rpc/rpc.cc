@@ -1174,12 +1174,14 @@ future<> server::connection::send_unknown_verb_reply(std::optional<rpc_clock_typ
       if (_options.streaming_domain) {
           _servers.erase(*_options.streaming_domain);
       }
-      return when_all(_ss_stopped.get_future(),
-          parallel_for_each(_conns | boost::adaptors::map_values, [] (shared_ptr<connection> conn) {
-              return conn->stop();
-          }),
-          _reply_gate.close()
-      ).discard_result();
+      return _ss_stopped.get_future().then([this] {
+          return when_all(
+              parallel_for_each(_conns | boost::adaptors::map_values, [] (shared_ptr<connection> conn) {
+                  return conn->stop();
+              }),
+              _reply_gate.close()
+          ).discard_result();
+      });
   }
 
   std::ostream& operator<<(std::ostream& os, const connection_id& id) {
