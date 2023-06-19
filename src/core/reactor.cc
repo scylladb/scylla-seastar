@@ -1681,7 +1681,7 @@ reactor::reap_kernel_completions() {
 
 const io_priority_class& default_priority_class() {
     static thread_local auto shard_default_class = [] {
-        return io_priority_class::register_one("default", 1);
+        return io_priority_class::register_one("default", 200);
     }();
     return shard_default_class;
 }
