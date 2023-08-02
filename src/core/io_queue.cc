@@ -503,6 +503,20 @@ sstring io_request::opname() const {
 
 } // internal namespace
 
+template <typename T>
+void update_moving_average(T& result, T value, double factor) noexcept {
+    result = result * factor + value * (1.0 - factor);
+}
+
+void io_queue::update_flow_ratio() noexcept {
+    if (_requests_completed > _prev_completed) {
+        auto instant = double(_requests_dispatched - _prev_dispatched) / double(_requests_completed - _prev_completed);
+        update_moving_average(_flow_ratio, instant, get_config().flow_ratio_ema_factor);
+        _prev_dispatched = _requests_dispatched;
+        _prev_completed = _requests_completed;
+    }
+}
+
 void
 io_queue::complete_request(io_desc_read_write& desc) noexcept {
     _requests_executing--;
@@ -520,6 +534,7 @@ io_queue::io_queue(io_group_ptr group, internal::io_sink& sink)
     : _priority_classes()
     , _group(std::move(group))
     , _sink(sink)
+    , _flow_ratio_update([this] { update_flow_ratio(); })
 {
     auto& cfg = get_config();
     if (cfg.duplex) {
@@ -548,6 +563,8 @@ io_queue::io_queue(io_group_ptr group, internal::io_sink& sink)
         }
         seastar_logger.info("Created io queue dev({}) capacities:{}", get_config().devid, caps_str);
     }
+
+    _flow_ratio_update.arm_periodic(std::chrono::duration_cast<std::chrono::milliseconds>(_group->io_latency_goal() * cfg.flow_ratio_ticks));
 }
 
 fair_group::config io_group::make_fair_group_config(const io_queue::config& qcfg) noexcept {
