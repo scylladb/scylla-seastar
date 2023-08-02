@@ -91,6 +91,7 @@ private:
 
     void update_flow_ratio() noexcept;
 
+    metrics::metric_groups _metric_groups;
 public:
 
     using clock_type = std::chrono::steady_clock;
