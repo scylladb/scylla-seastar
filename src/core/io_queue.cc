@@ -49,7 +49,7 @@ using io_direction_and_length = internal::io_direction_and_length;
 static constexpr auto io_direction_read = io_direction_and_length::read_idx;
 static constexpr auto io_direction_write = io_direction_and_length::write_idx;
 
-static fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg) noexcept;
+static fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg, std::optional<double> flow_ratio = std::nullopt) noexcept;
 
 struct default_io_exception_factory {
     static auto cancelled() {
@@ -878,7 +878,7 @@ stream_id io_queue::request_stream(io_direction_and_length dnl) const noexcept {
     return get_config().duplex ? dnl.rw_idx() : 0;
 }
 
-fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg) noexcept {
+fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg, std::optional<double> flow_ratio) noexcept {
     struct {
         unsigned weight;
         unsigned size;
@@ -894,7 +894,11 @@ fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::confi
     };
 
     const auto& m = mult[dnl.rw_idx()];
-    return fair_queue_ticket(m.weight, m.size * (dnl.length() >> io_queue::block_size_shift));
+    auto ret = fair_queue_ticket(m.weight, m.size * (dnl.length() >> io_queue::block_size_shift));
+    if (flow_ratio && *flow_ratio > cfg.flow_ratio_backpressure_threshold) {
+        ret.scale(*flow_ratio);
+    }
+    return ret;
 }
 
 io_queue::request_limits io_queue::get_request_limits() const noexcept {

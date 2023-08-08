@@ -50,6 +50,13 @@ float fair_queue_ticket::normalize(fair_queue_ticket denominator) const noexcept
     return float(_weight) / denominator._weight + float(_size) / denominator._size;
 }
 
+void fair_queue_ticket::scale(double factor) noexcept {
+    double weight = _weight * factor;
+    _weight = weight < std::numeric_limits<uint32_t>::max() ? weight : std::numeric_limits<uint32_t>::max();
+    double size = _size * factor;
+    _size = size < std::numeric_limits<uint32_t>::max() ? size : std::numeric_limits<uint32_t>::max();
+}
+
 fair_queue_ticket fair_queue_ticket::operator+(fair_queue_ticket desc) const noexcept {
     return fair_queue_ticket(_weight + desc._weight, _size + desc._size);
 }
@@ -136,6 +143,10 @@ auto fair_group::capacity_deficiency(capacity_t from) const noexcept -> capacity
 
 auto fair_group::ticket_capacity(fair_queue_ticket t) const noexcept -> capacity_t {
     return t.normalize(_cost_capacity) * fixed_point_factor;
+}
+
+auto fair_group::ticket_capacity(const fair_queue_entry& e) const noexcept -> capacity_t {
+    return std::min(ticket_capacity(e.ticket()), maximum_capacity());
 }
 
 // Priority class, to be used with a given fair_queue
@@ -251,7 +262,7 @@ auto fair_queue::grab_pending_capacity(const fair_queue_entry& ent) noexcept -> 
         return grab_result::pending;
     }
 
-    capacity_t cap = _group.ticket_capacity(ent._ticket);
+    capacity_t cap = _group.ticket_capacity(ent);
     if (cap > _pending->cap) {
         return grab_result::cant_preempt;
     }
@@ -265,7 +276,7 @@ auto fair_queue::grab_capacity(const fair_queue_entry& ent) noexcept -> grab_res
         return grab_pending_capacity(ent);
     }
 
-    capacity_t cap = _group.ticket_capacity(ent._ticket);
+    capacity_t cap = _group.ticket_capacity(ent);
     capacity_t want_head = _group.grab_capacity(cap);
     if (_group.capacity_deficiency(want_head)) {
         _pending.emplace(want_head, cap);
@@ -396,7 +407,7 @@ void fair_queue::dispatch_requests(std::function<void(fair_queue_entry&)> cb) {
         // unrestricted queue it can be as low as 2k. With large enough shares this
         // has chances to be translated into zero cost which, in turn, will make the
         // class show no progress and monopolize the queue.
-        auto req_cap = _group.ticket_capacity(req._ticket);
+        auto req_cap = _group.ticket_capacity(req);
         auto req_cost  = std::max(req_cap / h._shares, (capacity_t)1);
         // signed overflow check to make push_priority_class_from_idle math work
         if (h._accumulated >= std::numeric_limits<signed_capacity_t>::max() - req_cost) {

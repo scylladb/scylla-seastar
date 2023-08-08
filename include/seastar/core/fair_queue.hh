@@ -90,6 +90,8 @@ public:
     /// \param axis another \ref fair_queue_ticket to be used as a a base vector against which to normalize this fair_queue_ticket.
     float normalize(fair_queue_ticket axis) const noexcept;
 
+    void scale(double factor) noexcept;
+
     /*
      * For both dimentions checks if the first rover is ahead of the
      * second and returns the difference. If behind returns zero.
@@ -251,6 +253,7 @@ public:
 
     capacity_t capacity_deficiency(capacity_t from) const noexcept;
     capacity_t ticket_capacity(fair_queue_ticket ticket) const noexcept;
+    capacity_t ticket_capacity(const fair_queue_entry&) const noexcept;
 
     std::chrono::duration<double> rate_limit_duration() const noexcept {
         std::chrono::duration<double, rate_resolution> dur((double)_token_bucket.limit() / _token_bucket.rate());
