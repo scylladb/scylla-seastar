@@ -49,7 +49,7 @@ using io_direction_and_length = internal::io_direction_and_length;
 static constexpr auto io_direction_read = io_direction_and_length::read_idx;
 static constexpr auto io_direction_write = io_direction_and_length::write_idx;
 
-static fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg) noexcept;
+static fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg, std::optional<double> flow_ratio = std::nullopt) noexcept;
 
 struct default_io_exception_factory {
     static auto cancelled() {
@@ -503,9 +503,24 @@ sstring io_request::opname() const {
 
 } // internal namespace
 
+template <typename T>
+void update_moving_average(T& result, T value, double factor) noexcept {
+    result = result * factor + value * (1.0 - factor);
+}
+
+void io_queue::update_flow_ratio() noexcept {
+    if (_requests_completed > _prev_completed) {
+        auto instant = double(_requests_dispatched - _prev_dispatched) / double(_requests_completed - _prev_completed);
+        update_moving_average(_flow_ratio, instant, get_config().flow_ratio_ema_factor);
+        _prev_dispatched = _requests_dispatched;
+        _prev_completed = _requests_completed;
+    }
+}
+
 void
 io_queue::complete_request(io_desc_read_write& desc) noexcept {
     _requests_executing--;
+    _requests_completed++;
     _streams[desc.stream()].notify_request_finished(desc.ticket());
 }
 
@@ -519,6 +534,7 @@ io_queue::io_queue(io_group_ptr group, internal::io_sink& sink)
     : _priority_classes()
     , _group(std::move(group))
     , _sink(sink)
+    , _flow_ratio_update([this] { update_flow_ratio(); })
 {
     auto& cfg = get_config();
     if (cfg.duplex) {
@@ -547,6 +563,18 @@ io_queue::io_queue(io_group_ptr group, internal::io_sink& sink)
         }
         seastar_logger.info("Created io queue dev({}) capacities:{}", get_config().devid, caps_str);
     }
+
+    _flow_ratio_update.arm_periodic(std::chrono::duration_cast<std::chrono::milliseconds>(_group->io_latency_goal() * cfg.flow_ratio_ticks));
+
+    namespace sm = seastar::metrics;
+    auto owner_l = sm::shard_label(this_shard_id());
+    auto mnt_l = sm::label("mountpoint")(mountpoint());
+    auto group_l = sm::label("iogroup")(to_sstring(_group->_allocated_on));
+    _metric_groups.add_group("io_queue", {
+        sm::make_gauge("flow_ratio", [this] { return _flow_ratio; },
+                sm::description("Ratio of dispatch rate to completion rate. Is expected to be 1.0+ growing larger on reactor stalls or (!) disk problems"),
+                { owner_l, mnt_l, group_l }),
+    });
 }
 
 fair_group::config io_group::make_fair_group_config(const io_queue::config& qcfg) noexcept {
@@ -563,10 +591,8 @@ fair_group::config io_group::make_fair_group_config(const io_queue::config& qcfg
     return cfg;
 }
 
-static void maybe_warn_latency_goal_auto_adjust(const fair_group& fg, const io_queue::config& cfg) noexcept {
-    auto goal = fg.rate_limit_duration();
-    auto lvl = goal > 1.1 * cfg.rate_limit_duration ? log_level::warn : log_level::info;
-    seastar_logger.log(lvl, "IO queue uses {:.2f}ms latency goal for device {}", goal.count() * 1000, cfg.devid);
+std::chrono::duration<double> io_group::io_latency_goal() const noexcept {
+    return _fgs.front()->rate_limit_duration();
 }
 
 io_group::io_group(io_queue::config io_cfg)
@@ -575,11 +601,13 @@ io_group::io_group(io_queue::config io_cfg)
 {
     auto fg_cfg = make_fair_group_config(_config);
     _fgs.push_back(std::make_unique<fair_group>(fg_cfg));
-    maybe_warn_latency_goal_auto_adjust(*_fgs.back(), io_cfg);
     if (_config.duplex) {
         _fgs.push_back(std::make_unique<fair_group>(fg_cfg));
-        maybe_warn_latency_goal_auto_adjust(*_fgs.back(), io_cfg);
     }
+
+    auto goal = io_latency_goal();
+    auto lvl = goal > 1.1 * io_cfg.rate_limit_duration ? log_level::warn : log_level::debug;
+    seastar_logger.log(lvl, "IO queue uses {:.2f}ms latency goal for device {}", goal.count() * 1000, io_cfg.devid);
 
     /*
      * The maximum request size shouldn't result in the capacity that would
@@ -850,7 +878,7 @@ stream_id io_queue::request_stream(io_direction_and_length dnl) const noexcept {
     return get_config().duplex ? dnl.rw_idx() : 0;
 }
 
-fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg) noexcept {
+fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::config& cfg, std::optional<double> flow_ratio) noexcept {
     struct {
         unsigned weight;
         unsigned size;
@@ -866,7 +894,11 @@ fair_queue_ticket make_ticket(io_direction_and_length dnl, const io_queue::confi
     };
 
     const auto& m = mult[dnl.rw_idx()];
-    return fair_queue_ticket(m.weight, m.size * (dnl.length() >> io_queue::block_size_shift));
+    auto ret = fair_queue_ticket(m.weight, m.size * (dnl.length() >> io_queue::block_size_shift));
+    if (flow_ratio && *flow_ratio > cfg.flow_ratio_backpressure_threshold) {
+        ret.scale(*flow_ratio);
+    }
+    return ret;
 }
 
 io_queue::request_limits io_queue::get_request_limits() const noexcept {
@@ -980,6 +1012,7 @@ void io_queue::poll_io_queue() {
 void io_queue::submit_request(io_desc_read_write* desc, internal::io_request req) noexcept {
     _queued_requests--;
     _requests_executing++;
+    _requests_dispatched++;
     _sink.submit(desc, std::move(req));
 }
 

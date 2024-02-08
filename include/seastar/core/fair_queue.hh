@@ -90,6 +90,8 @@ public:
     /// \param axis another \ref fair_queue_ticket to be used as a a base vector against which to normalize this fair_queue_ticket.
     float normalize(fair_queue_ticket axis) const noexcept;
 
+    void scale(double factor) noexcept;
+
     /*
      * For both dimentions checks if the first rover is ahead of the
      * second and returns the difference. If behind returns zero.
@@ -183,7 +185,7 @@ public:
 
     static constexpr float fixed_point_factor = float(1 << 24);
     using rate_resolution = std::milli;
-    using token_bucket_t = internal::shared_token_bucket<capacity_t, rate_resolution, internal::capped_release::yes>;
+    using token_bucket_t = internal::shared_token_bucket<capacity_t, rate_resolution, internal::capped_release::no>;
 
 private:
 
@@ -246,12 +248,12 @@ public:
     capacity_t maximum_capacity() const noexcept { return _token_bucket.limit(); }
     capacity_t grab_capacity(capacity_t cap) noexcept;
     clock_type::time_point replenished_ts() const noexcept { return _token_bucket.replenished_ts(); }
-    void release_capacity(capacity_t cap) noexcept;
     void replenish_capacity(clock_type::time_point now) noexcept;
     void maybe_replenish_capacity(clock_type::time_point& local_ts) noexcept;
 
     capacity_t capacity_deficiency(capacity_t from) const noexcept;
     capacity_t ticket_capacity(fair_queue_ticket ticket) const noexcept;
+    capacity_t ticket_capacity(const fair_queue_entry&) const noexcept;
 
     std::chrono::duration<double> rate_limit_duration() const noexcept {
         std::chrono::duration<double, rate_resolution> dur((double)_token_bucket.limit() / _token_bucket.rate());
