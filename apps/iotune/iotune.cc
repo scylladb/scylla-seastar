@@ -725,6 +725,8 @@ int main(int ac, char** av) {
         ("accuracy", bpo::value<unsigned>()->default_value(3), "acceptable deviation of measurements (percents)")
         ("saturation", bpo::value<sstring>()->default_value(""), "measure saturation lengths (read | write | both) (this is very slow!)")
         ("random-io-buffer-size", bpo::value<unsigned>()->default_value(0), "force buffer size for random write and random read")
+        ("sequential_read_buffer_size", bpo::value<uint64_t>()->default_value(1 << 20), "Set the sequential buffer size used for read bandwidth calculation. Default is 1MiB")
+        ("sequential_write_buffer_size", bpo::value<uint64_t>()->default_value(1 << 20), "Set the sequential buffer size used for write bandwidth calculation. Default is 1MiB")
     ;
 
     return app.run(ac, av, [&] {
@@ -736,6 +738,8 @@ int main(int ac, char** av) {
             auto accuracy = configuration["accuracy"].as<unsigned>();
             auto saturation = configuration["saturation"].as<sstring>();
             auto random_io_buffer_size = configuration["random-io-buffer-size"].as<unsigned>();
+            auto sequential_read_buffer_size = configuration["sequential_read_buffer_size"].as<uint64_t>();
+            auto sequential_write_buffer_size = configuration["sequential_write_buffer_size"].as<uint64_t>();
 
             bool read_saturation, write_saturation;
             if (saturation == "") {
@@ -836,9 +840,8 @@ int main(int ac, char** av) {
                 fmt::print("Measuring sequential write bandwidth: ");
                 std::cout.flush();
                 io_rates write_bw;
-                size_t sequential_buffer_size = 1 << 20;
                 for (unsigned shard = 0; shard < smp::count; ++shard) {
-                    write_bw += iotune_tests.write_sequential_data(shard, sequential_buffer_size, duration * 0.70 / smp::count).get();
+                    write_bw += iotune_tests.write_sequential_data(shard, sequential_write_buffer_size, duration * 0.70 / smp::count).get();
                 }
                 write_bw.bytes_per_sec /= smp::count;
                 rates = iotune_tests.get_serial_rates().get();
@@ -849,13 +852,13 @@ int main(int ac, char** av) {
                 if (write_saturation) {
                     fmt::print("Measuring write saturation length: ");
                     std::cout.flush();
-                    write_sat = iotune_tests.saturate_write(write_bw.bytes_per_sec * (1.0 - rates.stdev_percents()), sequential_buffer_size/2, duration * 0.70).get();
+                    write_sat = iotune_tests.saturate_write(write_bw.bytes_per_sec * (1.0 - rates.stdev_percents()), sequential_write_buffer_size/2, duration * 0.70).get();
                     fmt::print("{}\n", *write_sat);
                 }
 
                 fmt::print("Measuring sequential read bandwidth: ");
                 std::cout.flush();
-                auto read_bw = iotune_tests.read_sequential_data(0, sequential_buffer_size, duration * 0.1).get();
+                auto read_bw = iotune_tests.read_sequential_data(0, sequential_read_buffer_size, duration * 0.1).get();
                 rates = iotune_tests.get_serial_rates().get();
                 fmt::print("{} MB/s{}\n", uint64_t(read_bw.bytes_per_sec / (1024 * 1024)), accuracy_msg());
 
@@ -864,7 +867,7 @@ int main(int ac, char** av) {
                 if (read_saturation) {
                     fmt::print("Measuring read saturation length: ");
                     std::cout.flush();
-                    read_sat = iotune_tests.saturate_read(read_bw.bytes_per_sec * (1.0 - rates.stdev_percents()), sequential_buffer_size/2, duration * 0.1).get();
+                    read_sat = iotune_tests.saturate_read(read_bw.bytes_per_sec * (1.0 - rates.stdev_percents()), sequential_read_buffer_size/2, duration * 0.1).get();
                     fmt::print("{}\n", *read_sat);
                 }
 
