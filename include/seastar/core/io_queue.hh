@@ -132,8 +132,8 @@ public:
 
     struct config {
         unsigned id;
-        unsigned long req_count_rate = std::numeric_limits<int>::max();
-        unsigned long blocks_count_rate = std::numeric_limits<int>::max();
+        unsigned long req_count_rate = std::numeric_limits<unsigned long>::max();
+        unsigned long blocks_count_rate = std::numeric_limits<unsigned long>::max();
         unsigned disk_req_write_to_read_multiplier = read_request_base_count;
         unsigned disk_blocks_write_to_read_multiplier = read_request_base_count;
         size_t disk_read_saturation_length = std::numeric_limits<size_t>::max();
@@ -215,8 +215,18 @@ private:
     friend struct ::io_queue_for_tests;
     friend const fair_group& internal::get_fair_group(const io_queue& ioq, unsigned stream);
 
+    /*
+     * This value is used as a cut-off point for calculating the maximum request length.
+     * We look for max(2^i) such that capacity(2^i) < maximum capacity. If 2^i gets bigger
+     * than this value, we stop looking and the maximum request length is set to this value.
+     */
+    static constexpr unsigned request_length_limit = 16 << 20; // 16 MiB
+
     const io_queue::config _config;
-    size_t _max_request_length[2];
+    size_t _max_request_length[2] = {
+        request_length_limit, // write
+        request_length_limit  // read
+    };
     boost::container::static_vector<fair_group, 2> _fgs;
     std::vector<std::unique_ptr<priority_class_data>> _priority_classes;
     util::spinlock _lock;
@@ -224,6 +234,10 @@ private:
 
     static fair_group::config make_fair_group_config(const io_queue::config& qcfg) noexcept;
     priority_class_data& find_or_create_class(internal::priority_class pc);
+
+    inline size_t max_request_length(int dnl_idx) const noexcept {
+        return _max_request_length[dnl_idx];
+    }
 };
 
 inline const io_queue::config& io_queue::get_config() const noexcept {
