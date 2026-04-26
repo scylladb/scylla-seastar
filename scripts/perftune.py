@@ -24,6 +24,7 @@ import shlex
 import psutil
 import mmap
 import datetime
+import dataclasses
 
 dry_run_mode = False
 def perftune_print(log_msg, *args, **kwargs):
@@ -625,6 +626,71 @@ class PerfTunerBase(metaclass=abc.ABCMeta):
 
         self.__is_aws_i3_nonmetal_instance = False
 
+
+def _ethtool_label(label):
+    """
+    Field factory that attaches an ethtool output label to a dataclass field.
+    """
+    return dataclasses.field(metadata={'label': label})
+
+
+@dataclasses.dataclass
+class LabeledDataclass:
+    """
+    Base for dataclasses whose fields carry ``metadata={'label': ...}``.
+    Provides a class-level mapping from lowercased labels to field names.
+    """
+
+    @classmethod
+    def _validate_labels(cls):
+        """
+        Verify that every field has a ``'label'`` metadata entry.
+        Raises ``TypeError`` if any field is missing one.
+        """
+        unlabeled = [f.name for f in dataclasses.fields(cls) if 'label' not in f.metadata]
+        if unlabeled:
+            raise TypeError(f"{cls.__name__}: fields {unlabeled} are missing 'label' metadata")
+
+    @classmethod
+    def label_to_field_name(cls):
+        """
+        Return a dict mapping ``label.lower()`` → field name.
+        """
+        cls._validate_labels()
+        return {f.metadata['label'].lower(): f.name for f in dataclasses.fields(cls)}
+
+    @classmethod
+    def labels(cls):
+        """
+        Return the list of label strings in field-definition order.
+        """
+        cls._validate_labels()
+        return [f.metadata['label'] for f in dataclasses.fields(cls)]
+
+
+@dataclasses.dataclass
+class EthtoolChannelPropertiesValues(LabeledDataclass):
+    """
+    RX / TX / Other / Combined channel counts from a single ``ethtool -l``
+    section.  ``None`` means the device reported ``n/a``.
+    """
+
+    rx: int | None = _ethtool_label('RX')
+    tx: int | None = _ethtool_label('TX')
+    other: int | None = _ethtool_label('Other')
+    combined: int | None = _ethtool_label('Combined')
+
+
+@dataclasses.dataclass
+class EthtoolLChannelInfo(LabeledDataclass):
+    """
+    Both sections of ``ethtool -l`` output.
+    """
+
+    preset_maximums: EthtoolChannelPropertiesValues = _ethtool_label('Pre-set maximums')
+    current_hardware_settings: EthtoolChannelPropertiesValues = _ethtool_label('Current hardware settings')
+
+
 #################################################
 class NetPerfTuner(PerfTunerBase):
     def __init__(self, args):
@@ -644,6 +710,72 @@ class NetPerfTuner(PerfTunerBase):
 
 
 #### Public methods ############################
+    @staticmethod
+    def __get_ethtool_l_info(iface: str) -> EthtoolLChannelInfo:
+        """
+        Run ``ethtool -l <iface>`` and return its parsed output.
+
+        :param iface: network interface name
+        :return: :class:`EthtoolLChannelInfo`
+        :raises ValueError: on missing or malformed sections
+        """
+        lines = run_ethtool(['-l', iface])
+
+        # Example of the ``ethtool -l <iface>`` command output:
+        #
+        #         $ ethtool -l enP16753s1
+        #         Channel parameters for enP16753s1:
+        #         Pre-set maximums:
+        #         RX:		n/a
+        #         TX:		n/a
+        #         Other:		n/a
+        #         Combined:	16
+        #         Current hardware settings:
+        #         RX:		n/a
+        #         TX:		n/a
+        #         Other:		n/a
+        #         Combined:	2
+        #
+        # As we can see there are 2 sections: "Pre-set maximums" and "Current hardware settings".
+        # The structure of each of the two sections is exactly the same and values can be either "n/a" or an integer.
+
+        prop_label_to_field = EthtoolChannelPropertiesValues.label_to_field_name()
+        section_label_to_field = EthtoolLChannelInfo.label_to_field_name()
+
+        section_re = re.compile(rf'^({"|".join(re.escape(l) for l in EthtoolLChannelInfo.labels())})\s*:', re.I)
+        channel_re = re.compile(rf'^\s*({"|".join(EthtoolChannelPropertiesValues.labels())})\s*:\s*(.+?)\s*$', re.I)
+
+        def parse_value(raw):
+            return None if raw.strip().lower() == 'n/a' else int(raw)
+
+        def parse_block(start):
+            vals = {}
+            for line in lines[start:]:
+                if section_re.match(line):
+                    break
+                m = channel_re.match(line)
+                if m:
+                    vals[prop_label_to_field[m.group(1).lower()]] = parse_value(m.group(2))
+            missing = [l for l in EthtoolChannelPropertiesValues.labels() if prop_label_to_field[l.lower()] not in vals]
+            if missing:
+                raise ValueError(f"ethtool -l: missing channel keys {missing}")
+            return EthtoolChannelPropertiesValues(**vals)
+
+        section_starts = {}
+        for idx, line in enumerate(lines):
+            m = section_re.match(line)
+            if m:
+                section_starts[m.group(1).lower()] = idx + 1
+
+        missing_sections = [l for l in EthtoolLChannelInfo.labels() if l.lower() not in section_starts]
+        if missing_sections:
+            raise ValueError(f"ethtool -l: missing sections {missing_sections}")
+
+        return EthtoolLChannelInfo(**{
+            section_label_to_field[label]: parse_block(start)
+            for label, start in section_starts.items()
+        })
+
     def tune(self):
         """
         Tune the networking server configuration.
@@ -738,7 +870,13 @@ class NetPerfTuner(PerfTunerBase):
 
     def __setup_rfs(self, iface):
         rps_limits = glob.glob("/sys/class/net/{}/queues/*/rps_flow_cnt".format(iface))
-        one_q_limit = int(self.__rfs_table_size / len(rps_limits))
+        sorted_rps_limits = sorted(rps_limits, key=NetPerfTuner.__rx_queue_index)
+
+        # Restrict the handled rps_limits indexes according to the number of Rx queues
+        num_rx_queues = self.__get_rx_queue_count(iface)
+        sorted_rps_limits = sorted_rps_limits[:num_rx_queues]
+
+        one_q_limit = int(self.__rfs_table_size / len(sorted_rps_limits))
 
         # If RFS feature is not present - get out
         try:
@@ -751,7 +889,7 @@ class NetPerfTuner(PerfTunerBase):
         run_one_command(['sysctl', '-w', 'net.core.rps_sock_flow_entries={}'.format(self.__rfs_table_size)])
 
         # Set each RPS queue limit
-        for rfs_limit_cnt in rps_limits:
+        for rfs_limit_cnt in sorted_rps_limits:
             msg = "Setting limit {} in {}".format(one_q_limit, rfs_limit_cnt)
             fwriteln(rfs_limit_cnt, "{}".format(one_q_limit), log_message=msg)
 
@@ -1110,15 +1248,55 @@ class NetPerfTuner(PerfTunerBase):
                 nic_irq_dict[nic] = self.__learn_irqs_one(nic)
         return nic_irq_dict
 
+    @staticmethod
+    def __rx_queue_index(path):
+        """
+        Retrieves an index from paths like /<something>/.../rx-N/<something else>/...,
+        e.g. /sys/class/net/<iface>/queues/rx-N/rps_cpus
+        where N is an integer.
+
+        For paths that don't match the pattern above a very big integer value is going to be returned.
+        This will result in matching paths to appear first and ordered if this function is used as a sorting key for
+        a list of paths.
+        """
+        m = re.search(r"/rx-(\d+)/", path)
+        return int(m.group(1)) if m else sys.maxsize
+
     def __get_rps_cpus(self, iface):
         """
-        Prints all rps_cpus files names for the given HW interface.
+        Returns all rps_cpus files names for the given HW interface.
 
         There is a single rps_cpus file for each RPS queue and there is a single RPS
         queue for each HW Rx queue. Each HW Rx queue should have an IRQ.
-        Therefore the number of these files is equal to the number of fast path Rx IRQs for this interface.
+        Therefore, the number of these files is equal to the number of fast path Rx IRQs for this interface.
+
+        The only known exception is a Mellanox mlx5 driver that was breaking this invariant in kernel/driver versions
+        5.3-6.0 by doubling the number of RPS queues in order to serve XSK by the higher RPS queues and RSS by the lower
+        ones.
         """
-        return glob.glob("/sys/class/net/{}/queues/*/rps_cpus".format(iface))
+        all_rps_cpus = glob.glob("/sys/class/net/{}/queues/*/rps_cpus".format(iface))
+        sorted_rps_cpus = sorted(all_rps_cpus, key=NetPerfTuner.__rx_queue_index)
+
+        # Take a special care of mlx5 devices: they double the number of RPS CPUs in kernel/driver versions 5.3-6.0
+        # in order to serve XSK by the higher RPS queues and RSS by the lower ones.
+        # The RSS queues count corresponds to the used "combined" value returned by 'ethtool -l <iface>'.
+        #
+        # The sanity was restored by this commit:
+        #
+        # commit 3db4c85cde7a514a5277070b32e776dbefcaa838
+        # Author: Maxim Mikityanskiy <maxtram95@gmail.com>
+        # Date:   Fri Sep 30 09:29:03 2022 -0700
+        #
+        #     net/mlx5e: xsk: Use queue indices starting from 0 for XSK queues
+        #
+        if self.__get_driver_name(iface).startswith("mlx5"):
+            ethtool_l_data = self.__get_ethtool_l_info(iface)
+            if (ethtool_l_data.current_hardware_settings.combined is not None and
+                    ethtool_l_data.current_hardware_settings.combined * 2 == len(sorted_rps_cpus)):
+                sorted_rps_cpus = sorted_rps_cpus[:ethtool_l_data.current_hardware_settings.combined]
+
+        return sorted_rps_cpus
+
 
     def __set_rx_channels_count(self, iface, count):
         """
