@@ -127,7 +127,7 @@ public:
 
     yield_awaiter final_suspend() noexcept {
         _value = nullptr;
-        return {this, this->_consumer};
+        return {this->_consumer};
     }
 
     void unhandled_exception() noexcept {
@@ -136,7 +136,7 @@ public:
 
     yield_awaiter yield_value(Yielded&& value) noexcept {
         this->_value = std::addressof(value);
-        return {this, this->_consumer};
+        return {this->_consumer};
     }
 
     copy_awaiter yield_value(const yielded_deref_type& value)
@@ -147,7 +147,7 @@ public:
                   std::constructible_from<
                     yielded_decvref_type,
                     const yielded_deref_type&>) {
-        return {this, this->_consumer, yielded_decvref_type(value), _value};
+        return {this->_consumer, yielded_decvref_type(value), _value};
     }
 
     void return_void() noexcept {}
@@ -179,7 +179,6 @@ private:
 
 template <typename Yielded>
 struct generator_promise_base<Yielded>::yield_awaiter final {
-    generator_promise_base* _promise;
     std::coroutine_handle<> _consumer;
 
     bool await_ready() const noexcept {
@@ -187,7 +186,6 @@ struct generator_promise_base<Yielded>::yield_awaiter final {
     }
     template <typename Promise>
     std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> producer) noexcept {
-        _promise->_waiting_task = &producer.promise();
         if (seastar::need_preempt()) {
             auto consumer = std::coroutine_handle<seastar::task>::from_address(
                 _consumer.address());
@@ -201,7 +199,6 @@ struct generator_promise_base<Yielded>::yield_awaiter final {
 
 template <typename Yielded>
 struct generator_promise_base<Yielded>::copy_awaiter final {
-    generator_promise_base* _promise;
     std::coroutine_handle<> _consumer;
     yielded_decvref_type _value;
     value_ptr_type& _value_ptr;
@@ -213,8 +210,6 @@ struct generator_promise_base<Yielded>::copy_awaiter final {
     std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> producer) noexcept {
         _value_ptr = std::addressof(_value);
 
-        auto& current = producer.promise();
-        _promise->_waiting_task = &current;
         if (seastar::need_preempt()) {
             auto consumer = std::coroutine_handle<seastar::task>::from_address(
                 _consumer.address());
@@ -429,7 +424,9 @@ public:
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> consumer) noexcept {
             auto& promise = _gen->_coro.promise();
+            auto consumer_handle = std::coroutine_handle<seastar::task>::from_address(consumer.address());
             promise._consumer = consumer;
+            promise._waiting_task = &consumer_handle.promise();
             // Check if we need to preempt. If not, directly resume producer.
             // If yes, schedule the producer through the scheduler.
             if (!seastar::need_preempt()) {
@@ -591,7 +588,7 @@ public:
 
     yield_awaiter final_suspend() noexcept {
         _finished = true;
-        return yield_awaiter{this, this->_consumer, true};
+        return yield_awaiter{this->_consumer, true};
     }
 
     void unhandled_exception() noexcept {
@@ -605,7 +602,7 @@ public:
         // Should we suspend and let consumer drain the buffer?
         // Suspend if: buffer is full OR we need to yield to other tasks
         bool should_suspend = !can_push_more(_buffer) || seastar::need_preempt();
-        return yield_awaiter{this, this->_consumer, should_suspend};
+        return yield_awaiter{this->_consumer, should_suspend};
     }
 
     // Yield a range/slice of elements (C++23 ranges support)
@@ -629,7 +626,7 @@ public:
 
         // All elements added, check if we should suspend
         bool should_suspend = !can_push_more(_buffer) || seastar::need_preempt();
-        return yield_awaiter{this, this->_consumer, should_suspend};
+        return yield_awaiter{this->_consumer, should_suspend};
     }
 
     void return_void() noexcept {}
@@ -666,15 +663,12 @@ private:
 
 template <bounded_container Container>
 struct generator_promise_base<Container>::yield_awaiter final {
-    generator_promise_base* _promise;
     std::coroutine_handle<> _consumer;
     bool _should_suspend;
 public:
-    yield_awaiter(generator_promise_base* promise,
-                  std::coroutine_handle<> consumer,
+    yield_awaiter(std::coroutine_handle<> consumer,
                   bool should_suspend) noexcept
-        : _promise{promise}
-        , _consumer{consumer}
+        : _consumer{consumer}
         , _should_suspend{should_suspend}
     {}
     bool await_ready() const noexcept {
@@ -682,7 +676,6 @@ public:
     }
     template <typename Promise>
     std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> producer) noexcept {
-        _promise->_waiting_task = &producer.promise();
         if (seastar::need_preempt()) {
             auto consumer = std::coroutine_handle<seastar::task>::from_address(
                 _consumer.address());
@@ -831,7 +824,9 @@ public:
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> consumer) {
             // Buffer is empty, need to resume producer to get more elements
             auto& promise = _gen->_coro.promise();
+            auto consumer_handle = std::coroutine_handle<seastar::task>::from_address(consumer.address());
             promise._consumer = consumer;
+            promise._waiting_task = &consumer_handle.promise();
 
             // Clear the buffer before resuming producer
             promise.buffer().clear();
