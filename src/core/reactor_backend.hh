@@ -82,15 +82,14 @@ class aio_storage_context {
     pending_aio_retry_t _pending_aio_retry; // Pending retries iocbs
     pending_aio_retry_t _aio_retries;       // Currently retried iocbs
     future<> _pending_aio_retry_fut = make_ready_future<>();
+    bool _stopping = false;
     internal::linux_abi::io_event _ev_buffer[max_aio];
 
     bool need_to_retry() const noexcept {
         return !_pending_aio_retry.empty() || !_aio_retries.empty();
     }
 
-    bool retry_in_progress() const noexcept {
-        return !_pending_aio_retry_fut.available();
-    }
+    void reap_pending_retries();
 
 public:
     explicit aio_storage_context(reactor& r);

@@ -130,10 +130,32 @@ aio_storage_context::~aio_storage_context() {
     internal::io_destroy(_io_context);
 }
 
+void aio_storage_context::reap_pending_retries() {
+    auto cancel = [this] (auto& retries) {
+        for (auto iocb : retries) {
+            auto desc = get_user_data<kernel_completion>(*iocb);
+            desc->complete_with(-ECANCELED);
+            _iocb_pool.put_one(iocb);
+        }
+        retries.clear();
+    };
+
+    cancel(_pending_aio_retry);
+    cancel(_aio_retries);
+}
+
 future<> aio_storage_context::stop() noexcept {
+    _stopping = true;
+
+    _r._io_sink.drain([] (const internal::io_request& req, io_completion* desc) -> bool {
+        desc->complete_with(-ECANCELED);
+        return true;
+    });
+
     return std::exchange(_pending_aio_retry_fut, make_ready_future<>()).finally([this] {
         return do_until([this] { return !_iocb_pool.outstanding(); }, [this] {
-            reap_completions(false);
+            reap_completions();
+            reap_pending_retries();
             return make_ready_future<>();
         });
     });
@@ -243,7 +265,7 @@ aio_storage_context::submit_work() {
         did_work = true;
     }
 
-    if (need_to_retry() && !retry_in_progress()) {
+    if (need_to_retry()) {
         schedule_retry();
     }
 
@@ -251,6 +273,10 @@ aio_storage_context::submit_work() {
 }
 
 void aio_storage_context::schedule_retry() {
+    if (!_pending_aio_retry_fut.available() || _stopping) {
+        return;
+    }
+
     // loop until both _pending_aio_retry and _aio_retries are empty.
     // While retrying _aio_retries, new retries may be queued onto _pending_aio_retry.
     _pending_aio_retry_fut = do_until([this] {
@@ -296,6 +322,10 @@ void aio_storage_context::schedule_retry() {
 
 bool aio_storage_context::reap_completions(bool allow_retry)
 {
+    if (_stopping) {
+        allow_retry = false;
+    }
+
     struct timespec timeout = {0, 0};
     auto n = io_getevents(_io_context, 1, max_aio, _ev_buffer, &timeout, _r._cfg.force_io_getevents_syscall);
     if (n == -1 && errno == EINTR) {
