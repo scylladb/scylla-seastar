@@ -265,7 +265,7 @@ namespace rpc {
   }
 
   future<> connection::send(snd_buf buf, std::optional<rpc_clock_type::time_point> timeout, cancellable* cancel) {
-      if (!_error) {
+      if (!_error && !_stream_closing) {
           if (timeout && *timeout <= rpc_clock_type::now()) {
               return make_ready_future<>();
           }
@@ -533,11 +533,26 @@ namespace rpc {
   future<> connection::stream_close() {
       auto f = make_ready_future<>();
       if (!error()) {
+          // Nothing may be sent on this connection from here on.  The write
+          // buffer is closed below while _error is still false, and _error is
+          // only set by the stop() that follows.
+          _stream_closing = true;
           promise<bool> p;
           _sink_closed_future = p.get_future();
+          // Entries that send() accepted before the flag was set may still be
+          // queued.  Wait for them to be written before closing the write
+          // buffer.  Nothing else waits for _outgoing_queue_ready from here on:
+          // send() is refused, and stop_send_loop() waits for
+          // _sink_closed_future.
+          auto queue_drained = std::exchange(_outgoing_queue_ready, make_ready_future<>());
           // stop_send_loop(), which also calls _write_buf.close(), and this code can run in parallel.
           // Use _sink_closed_future to serialize them and skip second call to close()
-          f = _write_buf.close().finally([p = std::move(p)] () mutable { p.set_value(true);});
+          f = queue_drained.then_wrapped([this] (future<> f) {
+              // _outgoing_queue_ready is exceptional if an entry failed; the
+              // write buffer still has to be closed.
+              f.ignore_ready_future();
+              return _write_buf.close();
+          }).finally([p = std::move(p)] () mutable { p.set_value(true);});
       }
       return f.finally([this] () mutable { return stop(); });
   }
